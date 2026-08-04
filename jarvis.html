@@ -421,15 +421,19 @@ footer {
       <h2>Settings</h2>
       <label for="apiKey">Gemini API Key</label>
       <input id="apiKey" type="password" placeholder="AIza...">
-      <label for="modelName">Model</label>
+      <label for="modelName">Gemini Model</label>
       <input id="modelName" type="text" placeholder="gemini-2.0-flash">
+      <label for="groqKey">Groq API Key (optional backup)</label>
+      <input id="groqKey" type="password" placeholder="gsk_...">
+      <label for="groqModel">Groq Model</label>
+      <input id="groqModel" type="text" placeholder="llama-3.3-70b-versatile">
       <label for="voiceRate">Speech speed: <span id="rateLabel">1.0</span></label>
       <input id="voiceRate" type="range" min="0.5" max="1.5" step="0.1" value="1.0">
       <div class="panel-actions">
         <button id="saveBtn" class="primary">Save</button>
         <button id="closeBtn">Close</button>
       </div>
-      <p class="hint">Get a free key at <span>aistudio.google.com/apikey</span></p>
+      <p class="hint">Gemini key: <span>aistudio.google.com/apikey</span> | Groq key (free): <span>console.groq.com</span></p>
     </div>
   </div>
 
@@ -440,6 +444,8 @@ const state = {
   apiKey: localStorage.getItem('jarvis_api_key') || '',
   model: localStorage.getItem('jarvis_model') || 'gemini-2.0-flash',
   currentModel: localStorage.getItem('jarvis_model') || 'gemini-2.0-flash',
+  groqKey: localStorage.getItem('jarvis_groq_key') || '',
+  groqModel: localStorage.getItem('jarvis_groq_model') || 'llama-3.3-70b-versatile',
   voiceRate: parseFloat(localStorage.getItem('jarvis_rate')) || 1,
   listening: false,
   speaking: false,
@@ -465,6 +471,8 @@ const els = {
   overlay: document.getElementById('settingsOverlay'),
   apiKey: document.getElementById('apiKey'),
   modelName: document.getElementById('modelName'),
+  groqKey: document.getElementById('groqKey'),
+  groqModel: document.getElementById('groqModel'),
   voiceRate: document.getElementById('voiceRate'),
   rateLabel: document.getElementById('rateLabel'),
   saveBtn: document.getElementById('saveBtn'),
@@ -586,39 +594,57 @@ function stopSpeaking() {
   state.speaking = false;
 }
 
-const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'];
 
 async function askGemini(userText) {
-  if (!state.apiKey) {
-    return 'I have no API key configured. Tap the settings icon and paste your Gemini API key - you can get one free at aistudio.google.com/apikey';
-  }
-
-  const models = [state.model];
-  for (const m of FALLBACK_MODELS) {
-    if (!models.includes(m)) models.push(m);
-  }
-  if (state.currentModel && models.indexOf(state.currentModel) > 0) {
-    models.splice(models.indexOf(state.currentModel), 1);
-    models.unshift(state.currentModel);
+  if (!state.apiKey && !state.groqKey) {
+    return 'I have no API key configured. Tap the settings icon and paste a Gemini API key (free at aistudio.google.com/apikey) or a Groq key (free at console.groq.com).';
   }
 
   let lastMsg = '';
-  for (let i = 0; i < models.length; i++) {
-    const result = await callGemini(models[i], userText);
+  let sawRateLimit = false;
+
+  if (state.apiKey) {
+    const models = [state.model];
+    for (const m of FALLBACK_MODELS) {
+      if (!models.includes(m)) models.push(m);
+    }
+    if (state.currentModel && models.indexOf(state.currentModel) > 0) {
+      models.splice(models.indexOf(state.currentModel), 1);
+      models.unshift(state.currentModel);
+    }
+    for (let i = 0; i < models.length; i++) {
+      const result = await callGemini(models[i]);
+      if (!result.isError) {
+        state.currentModel = models[i];
+        if (i > 0) addNote('Limit on ' + models[0] + ' - switched to ' + models[i] + '.');
+        return result.text;
+      }
+      lastMsg = result.msg;
+      if (result.code === 429) sawRateLimit = true;
+    }
+  }
+
+  if (state.groqKey) {
+    const result = await callGroq();
     if (!result.isError) {
-      state.currentModel = models[i];
-      if (i > 0) addNote('Rate limit on ' + models[0] + ' - switched to ' + models[i] + '.');
+      addNote('Gemini was out of quota - now answering via Groq.');
       return result.text;
     }
     lastMsg = result.msg;
+    if (result.code === 429) sawRateLimit = true;
   }
-  return 'All AI models are rate-limited right now, Sir (' + lastMsg + '). Please wait a minute and try again.';
+
+  if (sawRateLimit) {
+    return 'All AI services are rate-limited right now, Sir. The free daily quota is likely used up - wait a few minutes or check usage. Gemini: ai.dev/rate-limit. Groq: console.groq.com/usage';
+  }
+  return 'All AI services failed, Sir. Last error: ' + lastMsg;
 }
 
-async function callGemini(model, userText) {
+async function callGemini(model) {
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-    contents: state.history.concat([{ role: 'user', parts: [{ text: userText }] }]),
+    contents: state.history,
     generationConfig: { temperature: 0.8, maxOutputTokens: 400 }
   };
   try {
@@ -630,8 +656,8 @@ async function callGemini(model, userText) {
     if (!res.ok) {
       const err = await res.json().catch(() => null);
       const msg = err && err.error && err.error.message ? err.error.message : 'Unknown error';
-      if (res.status === 429) return { isError: true, msg: 'rate limited' };
-      return { isError: true, msg: 'Something went wrong (' + res.status + '). ' + msg };
+      if (res.status === 429) return { isError: true, code: 429, msg: 'rate limited' };
+      return { isError: true, code: res.status, msg: 'Something went wrong (' + res.status + '). ' + msg };
     }
     const data = await res.json();
     const parts = data.candidates && data.candidates[0] && data.candidates[0].content
@@ -640,7 +666,41 @@ async function callGemini(model, userText) {
     const text = parts.map(p => p.text || '').join('').trim();
     return { isError: false, text: text || '...' };
   } catch (err) {
-    return { isError: true, msg: 'Connection failed. Make sure you are online, Sir.' };
+    return { isError: true, code: 0, msg: 'Connection failed. Make sure you are online, Sir.' };
+  }
+}
+
+async function callGroq() {
+  const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
+  for (const m of state.history) {
+    messages.push({ role: m.role === 'model' ? 'assistant' : 'user', content: m.parts[0].text });
+  }
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + state.groqKey
+      },
+      body: JSON.stringify({
+        model: state.groqModel,
+        messages: messages,
+        temperature: 0.8,
+        max_tokens: 500
+      })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => null);
+      const msg = err && err.error && err.error.message ? err.error.message : 'Unknown error';
+      return { isError: true, code: res.status, msg: 'Something went wrong (' + res.status + '). ' + msg };
+    }
+    const data = await res.json();
+    const text = data.choices && data.choices[0] && data.choices[0].message
+      ? data.choices[0].message.content || ''
+      : '';
+    return { isError: false, text: text.trim() || '...' };
+  } catch (err) {
+    return { isError: true, code: 0, msg: 'Connection failed to Groq. Make sure you are online, Sir.' };
   }
 }
 
@@ -682,6 +742,8 @@ els.micBtn.addEventListener('click', toggleMic);
 els.settingsBtn.addEventListener('click', () => {
   els.apiKey.value = state.apiKey;
   els.modelName.value = state.model;
+  els.groqKey.value = state.groqKey;
+  els.groqModel.value = state.groqModel;
   els.voiceRate.value = state.voiceRate;
   els.rateLabel.textContent = state.voiceRate.toFixed(1);
   els.overlay.classList.add('show');
@@ -695,9 +757,13 @@ function saveSettings() {
   state.apiKey = els.apiKey.value.trim();
   state.model = els.modelName.value.trim() || 'gemini-2.0-flash';
   state.currentModel = state.model;
+  state.groqKey = els.groqKey.value.trim();
+  state.groqModel = els.groqModel.value.trim() || 'llama-3.3-70b-versatile';
   state.voiceRate = parseFloat(els.voiceRate.value) || 1;
   localStorage.setItem('jarvis_api_key', state.apiKey);
   localStorage.setItem('jarvis_model', state.model);
+  localStorage.setItem('jarvis_groq_key', state.groqKey);
+  localStorage.setItem('jarvis_groq_model', state.groqModel);
   localStorage.setItem('jarvis_rate', state.voiceRate);
   els.overlay.classList.remove('show');
   setStatus('ONLINE', 'idle');
