@@ -199,6 +199,16 @@ header {
   border-bottom-left-radius: 5px;
 }
 
+.bubble.note {
+  align-self: center;
+  background: transparent;
+  border: none;
+  color: #6b8494;
+  font-size: 12px;
+  letter-spacing: 1px;
+  padding: 2px 4px;
+}
+
 footer {
   padding: 10px 16px calc(14px + env(safe-area-inset-bottom));
   display: flex;
@@ -429,6 +439,7 @@ const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const state = {
   apiKey: localStorage.getItem('jarvis_api_key') || '',
   model: localStorage.getItem('jarvis_model') || 'gemini-2.0-flash',
+  currentModel: localStorage.getItem('jarvis_model') || 'gemini-2.0-flash',
   voiceRate: parseFloat(localStorage.getItem('jarvis_rate')) || 1,
   listening: false,
   speaking: false,
@@ -470,6 +481,14 @@ function addMessage(role, text) {
   bubble.className = 'bubble ' + role;
   bubble.textContent = text;
   els.chat.appendChild(bubble);
+  els.chat.scrollTop = els.chat.scrollHeight;
+}
+
+function addNote(text) {
+  const note = document.createElement('div');
+  note.className = 'bubble note';
+  note.textContent = text;
+  els.chat.appendChild(note);
   els.chat.scrollTop = els.chat.scrollHeight;
 }
 
@@ -567,17 +586,43 @@ function stopSpeaking() {
   state.speaking = false;
 }
 
+const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+
 async function askGemini(userText) {
   if (!state.apiKey) {
     return 'I have no API key configured. Tap the settings icon and paste your Gemini API key - you can get one free at aistudio.google.com/apikey';
   }
+
+  const models = [state.model];
+  for (const m of FALLBACK_MODELS) {
+    if (!models.includes(m)) models.push(m);
+  }
+  if (state.currentModel && models.indexOf(state.currentModel) > 0) {
+    models.splice(models.indexOf(state.currentModel), 1);
+    models.unshift(state.currentModel);
+  }
+
+  let lastMsg = '';
+  for (let i = 0; i < models.length; i++) {
+    const result = await callGemini(models[i], userText);
+    if (!result.isError) {
+      state.currentModel = models[i];
+      if (i > 0) addNote('Rate limit on ' + models[0] + ' - switched to ' + models[i] + '.');
+      return result.text;
+    }
+    lastMsg = result.msg;
+  }
+  return 'All AI models are rate-limited right now, Sir (' + lastMsg + '). Please wait a minute and try again.';
+}
+
+async function callGemini(model, userText) {
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
     contents: state.history.concat([{ role: 'user', parts: [{ text: userText }] }]),
     generationConfig: { temperature: 0.8, maxOutputTokens: 400 }
   };
   try {
-    const res = await fetch(API_BASE + '/' + state.model + ':generateContent?key=' + state.apiKey, {
+    const res = await fetch(API_BASE + '/' + model + ':generateContent?key=' + state.apiKey, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -585,16 +630,17 @@ async function askGemini(userText) {
     if (!res.ok) {
       const err = await res.json().catch(() => null);
       const msg = err && err.error && err.error.message ? err.error.message : 'Unknown error';
-      return 'Something went wrong (' + res.status + '). ' + msg;
+      if (res.status === 429) return { isError: true, msg: 'rate limited' };
+      return { isError: true, msg: 'Something went wrong (' + res.status + '). ' + msg };
     }
     const data = await res.json();
     const parts = data.candidates && data.candidates[0] && data.candidates[0].content
       ? data.candidates[0].content.parts || []
       : [];
     const text = parts.map(p => p.text || '').join('').trim();
-    return text || '...';
+    return { isError: false, text: text || '...' };
   } catch (err) {
-    return 'Connection failed. Make sure you are online, Sir.';
+    return { isError: true, msg: 'Connection failed. Make sure you are online, Sir.' };
   }
 }
 
@@ -648,6 +694,7 @@ els.voiceRate.addEventListener('input', () => {
 function saveSettings() {
   state.apiKey = els.apiKey.value.trim();
   state.model = els.modelName.value.trim() || 'gemini-2.0-flash';
+  state.currentModel = state.model;
   state.voiceRate = parseFloat(els.voiceRate.value) || 1;
   localStorage.setItem('jarvis_api_key', state.apiKey);
   localStorage.setItem('jarvis_model', state.model);
