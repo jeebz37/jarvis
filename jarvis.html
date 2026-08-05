@@ -46,6 +46,37 @@ header {
   text-shadow: 0 0 12px rgba(0, 229, 255, 0.6);
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pill-btn {
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 17px;
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  background: rgba(0, 229, 255, 0.06);
+  color: #7df0ff;
+  font-size: 11px;
+  letter-spacing: 2px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pill-btn.active {
+  background: rgba(0, 229, 255, 0.25);
+  border-color: #7df0ff;
+  box-shadow: 0 0 14px rgba(0, 229, 255, 0.5);
+  animation: pillpulse 2s ease-in-out infinite;
+}
+
+@keyframes pillpulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
 .icon-btn {
   width: 38px;
   height: 38px;
@@ -199,6 +230,19 @@ header {
   border-bottom-left-radius: 5px;
 }
 
+.bubble.model.speaking {
+  border-color: rgba(0, 229, 255, 0.45);
+  box-shadow: 0 0 14px rgba(0, 229, 255, 0.12);
+}
+
+.bubble.model .shown {
+  opacity: 1;
+}
+
+.bubble.model .rest {
+  opacity: 0.28;
+}
+
 .bubble.note {
   align-self: center;
   background: transparent;
@@ -338,6 +382,17 @@ footer {
   accent-color: #00c6e6;
 }
 
+.panel select {
+  height: 42px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 229, 255, 0.3);
+  background: #0d1820;
+  color: #eaf6fb;
+  font-size: 14px;
+  outline: none;
+}
+
 .panel-actions {
   display: flex;
   gap: 10px;
@@ -378,14 +433,17 @@ footer {
 
     <header>
       <span class="logo">J.A.R.V.I.S.</span>
-      <button id="settingsBtn" class="icon-btn" aria-label="Settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <line x1="4" y1="8" x2="20" y2="8"></line>
-          <circle cx="9" cy="8" r="2.5"></circle>
-          <line x1="4" y1="16" x2="20" y2="16"></line>
-          <circle cx="16" cy="16" r="2.5"></circle>
-        </svg>
-      </button>
+      <div class="header-actions">
+        <button id="standbyBtn" class="pill-btn">STANDBY</button>
+        <button id="settingsBtn" class="icon-btn" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="4" y1="8" x2="20" y2="8"></line>
+            <circle cx="9" cy="8" r="2.5"></circle>
+            <line x1="4" y1="16" x2="20" y2="16"></line>
+            <circle cx="16" cy="16" r="2.5"></circle>
+          </svg>
+        </button>
+      </div>
     </header>
 
     <div class="stage">
@@ -429,6 +487,8 @@ footer {
       <input id="groqModel" type="text" placeholder="llama-3.3-70b-versatile">
       <label for="voiceRate">Speech speed: <span id="rateLabel">1.0</span></label>
       <input id="voiceRate" type="range" min="0.5" max="1.5" step="0.1" value="1.0">
+      <label for="voiceSelect">JARVIS Voice</label>
+      <select id="voiceSelect"></select>
       <div class="panel-actions">
         <button id="saveBtn" class="primary">Save</button>
         <button id="closeBtn">Close</button>
@@ -447,9 +507,12 @@ const state = {
   groqKey: localStorage.getItem('jarvis_groq_key') || '',
   groqModel: localStorage.getItem('jarvis_groq_model') || 'llama-3.3-70b-versatile',
   voiceRate: parseFloat(localStorage.getItem('jarvis_rate')) || 1,
+  voiceName: localStorage.getItem('jarvis_voice') || '',
   listening: false,
   speaking: false,
   busy: false,
+  standby: false,
+  waking: false,
   history: []
 };
 
@@ -467,12 +530,14 @@ const els = {
   micBtn: document.getElementById('micBtn'),
   textInput: document.getElementById('textInput'),
   sendBtn: document.getElementById('sendBtn'),
+  standbyBtn: document.getElementById('standbyBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
   overlay: document.getElementById('settingsOverlay'),
   apiKey: document.getElementById('apiKey'),
   modelName: document.getElementById('modelName'),
   groqKey: document.getElementById('groqKey'),
   groqModel: document.getElementById('groqModel'),
+  voiceSelect: document.getElementById('voiceSelect'),
   voiceRate: document.getElementById('voiceRate'),
   rateLabel: document.getElementById('rateLabel'),
   saveBtn: document.getElementById('saveBtn'),
@@ -507,43 +572,130 @@ function initRecognition() {
   if (!SR) return false;
   recognition = new SR();
   recognition.lang = 'en-US';
-  recognition.interimResults = false;
   recognition.maxAlternatives = 1;
+  recognition.onerror = (e) => {
+    if (e.error === 'not-allowed') {
+      state.standby = false;
+      setStandbyUI(false);
+      setStatus('MICROPHONE BLOCKED', 'idle');
+    } else if (e.error === 'no-speech') {
+      setStatus('NO SPEECH', 'idle');
+    }
+  };
+  return true;
+}
 
+function setStandbyUI(on) {
+  els.standbyBtn.classList.toggle('active', on);
+}
+
+function standbyHandlers() {
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.onstart = () => {
+    state.listening = false;
+    if (state.standby) setStatus('STANDBY', 'idle');
+  };
+  recognition.onresult = onStandbyResult;
+  recognition.onend = onStandbyEnd;
+}
+
+function captureHandlers() {
+  recognition.continuous = false;
+  recognition.interimResults = false;
   recognition.onstart = () => {
     state.listening = true;
     els.micBtn.classList.add('active');
     setStatus('LISTENING', 'listening');
   };
+  recognition.onresult = onCaptureResult;
+  recognition.onend = onCaptureEnd;
+}
 
-  recognition.onresult = (e) => {
-    const text = e.results[0][0].transcript.trim();
-    if (text) handleUserMessage(text);
-  };
+function onStandbyResult(e) {
+  if (!state.standby) return;
+  let transcript = '';
+  for (let i = 0; i < e.results.length; i++) {
+    transcript += e.results[i][0].transcript + ' ';
+  }
+  if (/\b(?:hey\s+)?jarvis\b/i.test(transcript)) {
+    wake();
+  }
+}
 
-  recognition.onend = () => {
-    state.listening = false;
-    els.micBtn.classList.remove('active');
-    if (state.speaking) setStatus('SPEAKING', 'speaking');
-    else if (state.busy) setStatus('THINKING', 'thinking');
-    else setStatus('ONLINE', 'idle');
-  };
+function onStandbyEnd() {
+  if (!state.standby || state.waking || state.busy || state.speaking) return;
+  setTimeout(startStandbySession, 400);
+}
 
-  recognition.onerror = (e) => {
-    if (e.error === 'not-allowed') {
-      setStatus('MICROPHONE BLOCKED', 'idle');
-      els.chat.dataset.tip = '';
-    } else if (e.error === 'no-speech') {
-      setStatus('NO SPEECH DETECTED', 'idle');
-    }
-  };
+function startStandbySession() {
+  if (!state.standby) return;
+  standbyHandlers();
+  try { recognition.start(); } catch (e) {}
+}
 
-  return true;
+function startCapture() {
+  state.waking = true;
+  try { recognition.stop(); } catch (e) {}
+  setTimeout(() => {
+    state.waking = false;
+    captureHandlers();
+    try { recognition.start(); } catch (e) {}
+  }, 350);
+}
+
+function wake() {
+  playChime();
+  setStatus('LISTENING', 'listening');
+  startCapture();
+}
+
+function onCaptureResult(e) {
+  const text = e.results[0][0].transcript.trim();
+  if (text) handleUserMessage(text);
+}
+
+function onCaptureEnd() {
+  state.listening = false;
+  els.micBtn.classList.remove('active');
+  if (state.standby) {
+    if (!state.busy && !state.speaking) setStatus('STANDBY', 'idle');
+    setTimeout(startStandbySession, 500);
+  } else if (state.speaking) setStatus('SPEAKING', 'speaking');
+  else if (state.busy) setStatus('THINKING', 'thinking');
+  else setStatus('ONLINE', 'idle');
+}
+
+function enableStandby() {
+  if (!recognition && !initRecognition()) {
+    setStatus('VOICE NOT SUPPORTED', 'idle');
+    return;
+  }
+  stopSpeaking();
+  state.standby = true;
+  setStandbyUI(true);
+  startStandbySession();
+}
+
+function disableStandby() {
+  state.standby = false;
+  setStandbyUI(false);
+  try { if (recognition) recognition.stop(); } catch (e) {}
+  if (!state.busy && !state.speaking) setStatus('ONLINE', 'idle');
+}
+
+function toggleStandby() {
+  if (state.standby) disableStandby();
+  else enableStandby();
 }
 
 function toggleMic() {
+  if (state.standby) {
+    startCapture();
+    return;
+  }
   if (state.listening) {
-    recognition.stop();
+    try { recognition.stop(); } catch (e) {}
     return;
   }
   stopSpeaking();
@@ -551,47 +703,138 @@ function toggleMic() {
     setStatus('VOICE NOT SUPPORTED', 'idle');
     return;
   }
+  captureHandlers();
+  try { recognition.start(); } catch (e) {}
+}
+
+let audioCtx = null;
+
+function playChime() {
   try {
-    recognition.start();
-  } catch (err) {}
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, now);
+    osc.frequency.exponentialRampToValueAtTime(1320, now + 0.15);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.25, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+    osc.start(now);
+    osc.stop(now + 0.45);
+  } catch (e) {}
 }
 
 let chosenVoice = null;
 
+function getVoices() {
+  return 'speechSynthesis' in window ? speechSynthesis.getVoices() : [];
+}
+
 function pickVoice() {
-  const voices = speechSynthesis.getVoices();
+  const voices = getVoices();
+  if (state.voiceName) {
+    const found = voices.find(v => v.name === state.voiceName);
+    if (found) {
+      chosenVoice = found;
+      return;
+    }
+  }
   chosenVoice =
     voices.find(v => /google uk english male/i.test(v.name)) ||
+    voices.find(v => /daniel|arthur/i.test(v.name)) ||
     voices.find(v => /en[-_]GB/i.test(v.lang)) ||
     voices.find(v => /en[-_]US/i.test(v.lang)) ||
     voices[0] ||
     null;
 }
 
+function populateVoiceSelect() {
+  const voices = getVoices();
+  els.voiceSelect.innerHTML = '';
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = 'Auto (best JARVIS voice)';
+  if (!state.voiceName) auto.selected = true;
+  els.voiceSelect.appendChild(auto);
+  const seen = {};
+  voices.forEach(v => {
+    if (seen[v.name]) return;
+    seen[v.name] = true;
+    const opt = document.createElement('option');
+    opt.value = v.name;
+    opt.textContent = v.name;
+    if (v.name === state.voiceName) opt.selected = true;
+    els.voiceSelect.appendChild(opt);
+  });
+}
+
+let currentBubble = null;
+
 function speak(text) {
   stopSpeaking();
   if (!('speechSynthesis' in window)) return;
-  const utter = new SpeechSynthesisUtterance(text);
-  if (chosenVoice) utter.voice = chosenVoice;
-  utter.rate = state.voiceRate;
-  utter.pitch = 0.9;
-  utter.onstart = () => {
+  const utterance = new SpeechSynthesisUtterance(text);
+  if (chosenVoice) utterance.voice = chosenVoice;
+  utterance.rate = state.voiceRate;
+  utterance.pitch = 0.85;
+
+  const bubble = addSpeakingMessage(text);
+  currentBubble = bubble;
+
+  utterance.onboundary = (e) => {
+    if (bubble && typeof e.charIndex === 'number') {
+      const idx = Math.min(e.charIndex + 1, text.length);
+      bubble.shown.textContent = text.slice(0, idx);
+      bubble.rest.textContent = text.slice(idx);
+    }
+  };
+  utterance.onstart = () => {
     state.speaking = true;
     setStatus('SPEAKING', 'speaking');
   };
-  utter.onend = () => finishSpeaking();
-  utter.onerror = () => finishSpeaking();
-  speechSynthesis.speak(utter);
+  utterance.onend = () => finishSpeaking(bubble);
+  utterance.onerror = () => finishSpeaking(bubble);
+  speechSynthesis.speak(utterance);
 }
 
-function finishSpeaking() {
+function addSpeakingMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'bubble model speaking';
+  const shown = document.createElement('span');
+  shown.className = 'shown';
+  const rest = document.createElement('span');
+  rest.className = 'rest';
+  rest.textContent = text;
+  el.appendChild(shown);
+  el.appendChild(rest);
+  els.chat.appendChild(el);
+  els.chat.scrollTop = els.chat.scrollHeight;
+  return { el: el, shown: shown, rest: rest, text: text };
+}
+
+function revealAll(bubble) {
+  if (!bubble) return;
+  bubble.shown.textContent = bubble.text;
+  bubble.rest.textContent = '';
+  bubble.el.classList.remove('speaking');
+}
+
+function finishSpeaking(bubble) {
   state.speaking = false;
+  revealAll(bubble);
+  if (currentBubble === bubble) currentBubble = null;
   setStatus('ONLINE', 'idle');
 }
 
 function stopSpeaking() {
   if ('speechSynthesis' in window) speechSynthesis.cancel();
   state.speaking = false;
+  revealAll(currentBubble);
+  currentBubble = null;
 }
 
 const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.1-flash-lite'];
@@ -717,8 +960,8 @@ async function handleUserMessage(text) {
   state.history.push({ role: 'model', parts: [{ text: reply }] });
   if (state.history.length > 40) state.history = state.history.slice(-40);
 
-  addMessage('model', reply);
-  speak(reply);
+  if ('speechSynthesis' in window) speak(reply);
+  else addMessage('model', reply);
 }
 
 els.sendBtn.addEventListener('click', () => {
@@ -738,6 +981,7 @@ els.textInput.addEventListener('keydown', (e) => {
 });
 
 els.micBtn.addEventListener('click', toggleMic);
+els.standbyBtn.addEventListener('click', toggleStandby);
 
 els.settingsBtn.addEventListener('click', () => {
   els.apiKey.value = state.apiKey;
@@ -746,6 +990,7 @@ els.settingsBtn.addEventListener('click', () => {
   els.groqModel.value = state.groqModel;
   els.voiceRate.value = state.voiceRate;
   els.rateLabel.textContent = state.voiceRate.toFixed(1);
+  populateVoiceSelect();
   els.overlay.classList.add('show');
 });
 
@@ -759,12 +1004,15 @@ function saveSettings() {
   state.currentModel = state.model;
   state.groqKey = els.groqKey.value.trim();
   state.groqModel = els.groqModel.value.trim() || 'llama-3.3-70b-versatile';
+  state.voiceName = els.voiceSelect.value;
   state.voiceRate = parseFloat(els.voiceRate.value) || 1;
   localStorage.setItem('jarvis_api_key', state.apiKey);
   localStorage.setItem('jarvis_model', state.model);
   localStorage.setItem('jarvis_groq_key', state.groqKey);
   localStorage.setItem('jarvis_groq_model', state.groqModel);
+  localStorage.setItem('jarvis_voice', state.voiceName);
   localStorage.setItem('jarvis_rate', state.voiceRate);
+  pickVoice();
   els.overlay.classList.remove('show');
   setStatus('ONLINE', 'idle');
 }
@@ -773,11 +1021,14 @@ els.saveBtn.addEventListener('click', saveSettings);
 els.closeBtn.addEventListener('click', () => els.overlay.classList.remove('show'));
 
 if ('speechSynthesis' in window) {
-  speechSynthesis.onvoiceschanged = pickVoice;
+  speechSynthesis.onvoiceschanged = () => {
+    pickVoice();
+    if (els.overlay.classList.contains('show')) populateVoiceSelect();
+  };
   pickVoice();
 }
 
-addMessage('model', 'Systems online, Sir. Tap the microphone and speak, or type below.');
+addMessage('model', 'Systems online, Sir. Tap the mic to talk, or press STANDBY and say "JARVIS" to wake me.');
 setStatus('ONLINE', 'idle');
 
 </script>
