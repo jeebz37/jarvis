@@ -422,7 +422,7 @@ footer {
       <label for="apiKey">Gemini API Key</label>
       <input id="apiKey" type="password" placeholder="AIza...">
       <label for="modelName">Gemini Model</label>
-      <input id="modelName" type="text" placeholder="gemini-2.0-flash">
+      <input id="modelName" type="text" placeholder="gemini-3.5-flash">
       <label for="groqKey">Groq API Key (optional backup)</label>
       <input id="groqKey" type="password" placeholder="gsk_...">
       <label for="groqModel">Groq Model</label>
@@ -442,8 +442,8 @@ const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 const state = {
   apiKey: localStorage.getItem('jarvis_api_key') || '',
-  model: localStorage.getItem('jarvis_model') || 'gemini-2.0-flash',
-  currentModel: localStorage.getItem('jarvis_model') || 'gemini-2.0-flash',
+  model: localStorage.getItem('jarvis_model') || 'gemini-3.5-flash',
+  currentModel: localStorage.getItem('jarvis_model') || 'gemini-3.5-flash',
   groqKey: localStorage.getItem('jarvis_groq_key') || '',
   groqModel: localStorage.getItem('jarvis_groq_model') || 'llama-3.3-70b-versatile',
   voiceRate: parseFloat(localStorage.getItem('jarvis_rate')) || 1,
@@ -594,7 +594,7 @@ function stopSpeaking() {
   state.speaking = false;
 }
 
-const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'];
+const FALLBACK_MODELS = ['gemini-3.6-flash', 'gemini-3.1-flash-lite'];
 
 async function askGemini(userText) {
   if (!state.apiKey && !state.groqKey) {
@@ -755,7 +755,7 @@ els.voiceRate.addEventListener('input', () => {
 
 function saveSettings() {
   state.apiKey = els.apiKey.value.trim();
-  state.model = els.modelName.value.trim() || 'gemini-2.0-flash';
+  state.model = els.modelName.value.trim() || 'gemini-3.5-flash';
   state.currentModel = state.model;
   state.groqKey = els.groqKey.value.trim();
   state.groqModel = els.groqModel.value.trim() || 'llama-3.3-70b-versatile';
